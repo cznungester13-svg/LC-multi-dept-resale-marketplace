@@ -418,3 +418,284 @@ CREATE TABLE payments (
 
     FOREIGN KEY (order_id) REFERENCES orders(order_id)
 );
+backend/
+├── server.js
+├── routes/
+│   ├── cartRoutes.js
+│   ├── orderRoutes.js
+│   └── paymentRoutes.js
+├── controllers/
+│   ├── cartController.js
+│   ├── orderController.js
+│   └── paymentController.js
+├── db/
+│   └── db.js
+└── package.json
+npm install express pg dotenv cors
+const { Pool } = require('pg');
+
+const pool = new Pool({
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
+  port: process.env.DB_PORT
+});
+
+module.exports = pool;
+const pool = require('../db/db');
+
+exports.addToCart = async (req, res) => {
+  try {
+    const { user_id, product_id, quantity } = req.body;
+
+    const result = await pool.query(
+      `
+      INSERT INTO cart_items
+      (user_id, product_id, quantity)
+      VALUES ($1, $2, $3)
+      RETURNING *
+      `,
+      [user_id, product_id, quantity]
+    );
+
+    res.status(201).json(result.rows[0]);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error adding item to cart' });
+  }
+};
+
+const express = require('express');
+const router = express.Router();
+
+const {
+  addToCart
+} = require('../controllers/cartController');
+
+router.post('/add', addToCart);
+
+module.exports = router;
+const pool = require('../db/db');
+
+exports.createOrder = async (req, res) => {
+  try {
+
+    const {
+      user_id,
+      total_amount
+    } = req.body;
+
+    const result = await pool.query(
+      `
+      INSERT INTO orders
+      (user_id, total_amount)
+      VALUES ($1, $2)
+      RETURNING *
+      `,
+      [user_id, total_amount]
+    );
+
+    res.status(201).json(result.rows[0]);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      message: 'Error creating order'
+    });
+  }
+};
+const express = require('express');
+const router = express.Router();
+
+const {
+  createOrder
+} = require('../controllers/orderController');
+
+router.post('/', createOrder);
+
+module.exports = router;
+exports.checkout = async (req, res) => {
+
+  const client = await pool.connect();
+
+  try {
+
+    await client.query('BEGIN');
+
+    const { user_id } = req.body;
+
+    const cart = await client.query(
+      `
+      SELECT c.*, p.price, p.seller_id
+      FROM cart_items c
+      JOIN products p
+      ON c.product_id = p.product_id
+      WHERE c.user_id = $1
+      `,
+      [user_id]
+    );
+
+    let total = 0;
+
+    cart.rows.forEach(item => {
+      total += item.price * item.quantity;
+    });
+
+    const orderResult = await client.query(
+      `
+      INSERT INTO orders
+      (user_id, total_amount)
+      VALUES ($1, $2)
+      RETURNING *
+      `,
+      [user_id, total]
+    );
+
+    const order = orderResult.rows[0];
+
+    for (const item of cart.rows) {
+
+      await client.query(
+        `
+        INSERT INTO order_items
+        (
+          order_id,
+          product_id,
+          seller_id,
+          quantity,
+          price_at_purchase
+        )
+        VALUES ($1,$2,$3,$4,$5)
+        `,
+        [
+          order.order_id,
+          item.product_id,
+          item.seller_id,
+          item.quantity,
+          item.price
+        ]
+      );
+    }
+
+    await client.query(
+      `
+      DELETE FROM cart_items
+      WHERE user_id = $1
+      `,
+      [user_id]
+    );
+
+    await client.query('COMMIT');
+
+    res.status(201).json(order);
+
+  } catch (err) {
+
+    await client.query('ROLLBACK');
+
+    console.error(err);
+
+    res.status(500).json({
+      message: 'Checkout failed'
+    });
+
+  } finally {
+    client.release();
+  }
+};
+router.post('/checkout', checkout);
+const pool = require('../db/db');
+
+exports.createPayment = async (req, res) => {
+
+  try {
+
+    const {
+      order_id,
+      amount,
+      provider,
+      transaction_id
+    } = req.body;
+
+    const result = await pool.query(
+      `
+      INSERT INTO payments
+      (
+        order_id,
+        amount,
+        provider,
+        transaction_id,
+        status
+      )
+      VALUES ($1,$2,$3,$4,'SUCCEEDED')
+      RETURNING *
+      `,
+      [
+        order_id,
+        amount,
+        provider,
+        transaction_id
+      ]
+    );
+
+    await pool.query(
+      `
+      UPDATE orders
+      SET status='PAID'
+      WHERE order_id=$1
+      `,
+      [order_id]
+    );
+
+    res.status(201).json(result.rows[0]);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      message: 'Payment failed'
+    });
+  }
+};
+const express = require('express');
+const router = express.Router();
+
+const {
+  createPayment
+} = require('../controllers/paymentController');
+
+router.post('/', createPayment);
+});module.exports = router;
+const express = require('express');
+const cors = require('cors');
+
+const cartRoutes = require('./routes/cartRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/cart', cartRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
+
+app.listen(5000, () => {
+  console.log('Server running on port 5000');
+});
+React Frontend
+      ↓
+POST /api/cart/add
+      ↓
+POST /api/orders/checkout
+      ↓
+Creates Order + Order Items
+      ↓
+POST /api/payments
+      ↓
+Marks Order as PAID
