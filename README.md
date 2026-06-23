@@ -88,5 +88,31 @@ CREATE tABLE products (
   deleted_at TIMESTAMP
 );
 
+users
+categories
+brands
+product_images
+product_attributes
+orders
+order_items
+reviews
+wishlists
+seller_payouts
+addresses
+
+products
+product_variants
+inventory
+product_images
+seller_listings
+
+products
+    ↓
+product_variants
+    ↓
+seller_listings
+    ↓
+inventory
+
 
              
